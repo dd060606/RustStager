@@ -76,7 +76,8 @@ fn patch_manifest(text: &str, spec: &Spec) -> Result<String> {
     let (Some(begin), Some(end)) = (text.find(TARGET_BEGIN), text.find(TARGET_END)) else {
         bail!("template Cargo.toml lacks the `{TARGET_BEGIN}` / `{TARGET_END}` markers");
     };
-    let begin = begin + TARGET_BEGIN.len() + 1; // keep the marker line itself
+    let begin = begin + TARGET_BEGIN.len();
+    let begin = begin + text[begin..].find('\n').map(|i| i + 1).unwrap_or(0); // keep the marker line itself
     let mut out = format!("{}{}{}", &text[..begin], target, &text[end..]);
 
     // 2. Default features: the source mode, plus `dll`.
