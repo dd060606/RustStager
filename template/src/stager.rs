@@ -180,7 +180,7 @@ fn buf() -> *mut u8 {
 }
 
 #[cfg(any(feature = "local", feature = "url"))]
-const MAX_SC: usize = 32 * 1024 * 1024;
+const MAX_SC: usize = 128 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------------------
 // Compile-time UTF-8 -> UTF-16 (NUL-terminated).
