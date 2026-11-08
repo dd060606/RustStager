@@ -96,6 +96,8 @@ pub struct Source {
 pub enum Format {
     Exe,
     Dll,
+    /// Raw position-independent shellcode (.bin), x86-64 only.
+    Shellcode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -124,8 +126,9 @@ impl Arch {
 impl Format {
     pub fn extension(self) -> &'static str {
         match self {
-            Format::Exe => "exe",
-            Format::Dll => "dll",
+            Format::Exe      => "exe",
+            Format::Dll      => "dll",
+            Format::Shellcode => "bin",
         }
     }
 }

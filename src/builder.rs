@@ -1,12 +1,14 @@
 //! Runs cargo on the generated project and returns the built binary.
 
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
 use crate::cli::Format;
+use crate::pe;
 
 /// Builds the project in `dir` and returns the path of the produced exe/dll.
 ///
@@ -35,6 +37,20 @@ pub fn build(cargo: &Path, dir: &Path, target_dir: &Path, triple: &str, format: 
         if !out.status.success() {
             bail!("cargo build failed:\n{}", String::from_utf8_lossy(&out.stderr));
         }
+    }
+
+    // For shellcode, cargo builds stager.exe; we then extract its .text section.
+    if format == Format::Shellcode {
+        let exe = target_dir.join(triple).join("release").join("stager.exe");
+        if !exe.is_file() {
+            bail!("build succeeded but {} is missing", exe.display());
+        }
+        let pe_bytes = fs::read(&exe).with_context(|| format!("cannot read {}", exe.display()))?;
+        let sc = pe::extract_shellcode(&pe_bytes)
+            .with_context(|| format!("failed to extract shellcode from {}", exe.display()))?;
+        let bin = target_dir.join(triple).join("release").join("stager.bin");
+        fs::write(&bin, &sc).with_context(|| format!("cannot write {}", bin.display()))?;
+        return Ok(bin);
     }
 
     let artifact = target_dir.join(triple).join("release").join(format!("stager.{}", format.extension()));

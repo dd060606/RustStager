@@ -2,6 +2,7 @@
 
 mod builder;
 mod cli;
+mod pe;
 mod project;
 mod template;
 mod toolchain;
@@ -64,7 +65,10 @@ fn run(cli: Cli) -> Result<()> {
     let tools = toolchain::Toolchain::find()?;
     tools.ensure_target(triple, &dir, !cli.no_install)?;
 
-    eprintln!("Building {} for {triple}...", cli.format.extension());
+    eprintln!("Building {} for {triple}...", match cli.format {
+        cli::Format::Shellcode => "shellcode",
+        _ => cli.format.extension(),
+    });
     let target_dir = cache_dir().join("target");
     let artifact = builder::build(&tools.cargo, &dir, &target_dir, triple, cli.format, cli.verbose)?;
 

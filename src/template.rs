@@ -12,6 +12,7 @@ const BUILTIN: &[(&str, &[u8])] = &[
     ("build.rs", include_bytes!("../template/build.rs")),
     (".cargo/config.toml", include_bytes!("../template/.cargo/config.toml")),
     ("src/stager.rs", include_bytes!("../template/src/stager.rs")),
+    ("src/shellcode.rs", include_bytes!("../template/src/shellcode.rs")),
     ("payload.bin", include_bytes!("../template/payload.bin")),
 ];
 

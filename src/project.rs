@@ -68,17 +68,26 @@ fn read(path: &Path) -> Result<String> {
 }
 
 fn patch_manifest(text: &str, spec: &Spec) -> Result<String> {
-    // 1. Crate target: an executable, or a cdylib for DLLs.
-    let target = match spec.format {
-        Format::Exe => "[[bin]]\nname = \"stager\"\npath = \"src/stager.rs\"\ntest = false\nbench = false\n",
-        Format::Dll => "[lib]\nname = \"stager\"\npath = \"src/stager.rs\"\ncrate-type = [\"cdylib\"]\ntest = false\nbench = false\n",
+    // 1. Crate target: executable, cdylib for DLLs, or shellcode binary.
+    if spec.format == Format::Shellcode && spec.arch != Arch::X86_64 {
+        bail!("--format shellcode only supports x86_64");
+    }
+    let (src, is_dll) = match spec.format {
+        Format::Exe      => ("src/stager.rs", false),
+        Format::Dll      => ("src/stager.rs", true),
+        Format::Shellcode => ("src/shellcode.rs", false),
+    };
+    let target = if is_dll {
+        format!("[lib]\nname = \"stager\"\npath = \"{src}\"\ncrate-type = [\"cdylib\"]\ntest = false\nbench = false\n")
+    } else {
+        format!("[[bin]]\nname = \"stager\"\npath = \"{src}\"\ntest = false\nbench = false\n")
     };
     let (Some(begin), Some(end)) = (text.find(TARGET_BEGIN), text.find(TARGET_END)) else {
         bail!("template Cargo.toml lacks the `{TARGET_BEGIN}` / `{TARGET_END}` markers");
     };
     let begin = begin + TARGET_BEGIN.len();
     let begin = begin + text[begin..].find('\n').map(|i| i + 1).unwrap_or(0); // keep the marker line itself
-    let mut out = format!("{}{}{}", &text[..begin], target, &text[end..]);
+    let mut out = format!("{}{}{}", &text[..begin], &target, &text[end..]);
 
     // 2. Default features: the source mode, plus `dll`.
     let mut features = vec![spec.source.feature()];
@@ -166,7 +175,7 @@ mod tests {
         assert!(code(&out).contains("crate-type = [\"cdylib\"]"));
         assert!(!code(&out).contains("[[bin]]"));
         assert!(out.contains("default = [\"url\", \"dll\"]"));
-        assert!(out.contains("[dependencies]\n# added with --dep\nheapless = \"0.8\"\n"));
+        assert!(out.replace("\r\n", "\n").contains("[dependencies]\n# added with --dep\nheapless = \"0.8\"\n"));
         assert!(out.contains(TARGET_BEGIN) && out.contains(TARGET_END));
     }
 
